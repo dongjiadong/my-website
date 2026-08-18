@@ -162,7 +162,7 @@ let pendingFiles = [];
 let currentCat = 'all';
 
 function getFileCategory(file) {
-  const ext = file.name.split('.').pop().toLowerCase();
+  const ext = (file.name || '').split('.').pop().toLowerCase();
   if (['pdf', 'doc', 'docx', 'txt', 'xls', 'xlsx', 'ppt', 'pptx'].includes(ext)) return 'document';
   if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'bmp'].includes(ext)) return 'image';
   if (['mp4', 'avi', 'mov', 'webm', 'mkv', 'flv'].includes(ext)) return 'video';
@@ -186,6 +186,7 @@ function saveStoredFiles(files) {
 }
 
 function formatSize(bytes) {
+  if (!bytes) return '0 B';
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
   return (bytes / 1048576).toFixed(1) + ' MB';
@@ -250,7 +251,7 @@ function renderFileList() {
   });
 }
 
-// 封面图片管理
+// ==================== 封面图片管理 ====================
 const coverImgUrl = document.getElementById('coverImgUrl');
 const saveCoverImg = document.getElementById('saveCoverImg');
 const coverUploadZone = document.getElementById('coverUploadZone');
@@ -343,6 +344,84 @@ if (savePanelCovers) {
   });
 }
 
+// ==================== 从仓库选择文件（新功能） ====================
+const REPO_OWNER = 'dongjiadong';
+const REPO_NAME = 'my-website';
+const REPO_BRANCH = 'main';
+const repoModal = document.getElementById('repoModal');
+const repoFileList = document.getElementById('repoFileList');
+const repoModalClose = document.getElementById('repoModalClose');
+const repoModalCancel = document.getElementById('repoModalCancel');
+const repoModalConfirm = document.getElementById('repoModalConfirm');
+const selectFromRepoBtn = document.getElementById('selectFromRepo');
+
+async function fetchRepoContents(dir) {
+  try {
+    const url = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${dir}?ref=${REPO_BRANCH}`;
+    const r = await fetch(url);
+    if (!r.ok) return [];
+    const data = await r.json();
+    if (!Array.isArray(data)) return [];
+    return data.filter(item => item.type === 'file');
+  } catch (e) { return []; }
+}
+
+async function openRepoModal() {
+  if (!repoModal || !repoFileList) return;
+  repoFileList.innerHTML = '<p style="color:#909399">正在加载仓库文件…</p>';
+  repoModal.style.display = 'flex';
+
+  const dirs = ['images', 'documents', 'videos'];
+  const allFiles = [];
+  for (const d of dirs) {
+    const items = await fetchRepoContents(d);
+    items.forEach(it => {
+      allFiles.push({ path: it.path, name: it.name, size: it.size || 0, dir: d, download_url: it.download_url });
+    });
+  }
+
+  if (allFiles.length === 0) {
+    repoFileList.innerHTML = '<p class="file-empty">仓库中未找到 images/ documents/ videos 下的文件，请先把文件提交到仓库。</p>';
+    return;
+  }
+
+  repoFileList.innerHTML = '<div>' + allFiles.map((f, i) =>
+    `<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid #f2f6fc"><input type="checkbox" data-idx="${i}"> <span style="flex:1">${f.path}</span> <small style="color:#909399">${formatSize(f.size)}</small></label>`
+  ).join('') + '</div>';
+  // attach data
+  repoFileList._files = allFiles;
+}
+
+function closeRepoModal() {
+  if (!repoModal) return;
+  repoModal.style.display = 'none';
+}
+
+if (repoModalClose) repoModalClose.addEventListener('click', closeRepoModal);
+if (repoModalCancel) repoModalCancel.addEventListener('click', closeRepoModal);
+if (selectFromRepoBtn) selectFromRepoBtn.addEventListener('click', openRepoModal);
+if (repoModalConfirm) repoModalConfirm.addEventListener('click', () => {
+  const checkboxes = repoFileList.querySelectorAll('input[type=checkbox]');
+  const files = repoFileList._files || [];
+  const stored = getStoredFiles();
+  checkboxes.forEach(cb => {
+    if (cb.checked) {
+      const idx = parseInt(cb.getAttribute('data-idx'));
+      const f = files[idx];
+      if (!f) return;
+      // avoid duplicates
+      if (!stored.find(s => s.path === f.path)) {
+        stored.push({ name: f.name, path: f.path, size: f.size || 0, type: '', category: getFileCategory({name: f.name}), show: true, date: new Date().toLocaleDateString('zh-CN') });
+      }
+    }
+  });
+  saveStoredFiles(stored);
+  refreshViewerTabs();
+  renderFileList();
+  closeRepoModal();
+});
+
+// ==================== 文件处理（本地选择提示为“本地未上传”） ====================
 function processFiles(fileArr) {
   pendingFiles = [...pendingFiles, ...Array.from(fileArr)];
   renderPendingList();
@@ -352,10 +431,12 @@ function processFiles(fileArr) {
     let prefix = 'documents/';
     if (cat === 'image') prefix = 'images/';
     if (cat === 'video') prefix = 'videos/';
+    // Warn: local files are NOT uploaded automatically. We only register their intended path.
     stored.push({
       name: f.name, size: f.size, type: f.type, path: prefix + f.name,
       category: cat, show: true,
-      date: new Date().toLocaleDateString('zh-CN')
+      date: new Date().toLocaleDateString('zh-CN'),
+      note: 'local'
     });
   });
   saveStoredFiles(stored);
